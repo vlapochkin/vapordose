@@ -34,7 +34,7 @@ fi
 cp -r resources $APP_DIR/usr/bin/
 
 # Icon
-curl -L -o $APP_DIR/usr/share/icons/hicolor/scalable/apps/$BIN_NAME.svg https://raw.githubusercontent.com/GNOME/adwaita-icon-theme/master/Adwaita/scalable/apps/preferences-system-symbolic.svg
+cp assets/$BIN_NAME.svg $APP_DIR/usr/share/icons/hicolor/scalable/apps/$BIN_NAME.svg
 
 # Desktop file
 cp $BIN_NAME.desktop $APP_DIR/usr/share/applications/$BIN_NAME.desktop

@@ -22,6 +22,13 @@ else
     echo "No bundled resources found; use 'Update SmokeAPI' from the app menu after first launch."
 fi
 
+echo "Installing icon..."
+mkdir -p ~/.local/share/icons/hicolor/scalable/apps
+install -m 644 assets/$BIN_NAME.svg ~/.local/share/icons/hicolor/scalable/apps/
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t ~/.local/share/icons/hicolor 2>/dev/null || true
+fi
+
 echo "Installing desktop entry..."
 mkdir -p ~/.local/share/applications
 install -m 644 "$BIN_NAME.desktop" ~/.local/share/applications/
