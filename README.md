@@ -17,7 +17,7 @@ It scans your Steam installations (internal SSDs, Flatpak, MicroSD cards, extern
 
 ---
 
-### ✨ Features in v0.5.0
+### ✨ Features in v0.5.x
 
 - 🚀 **Steam Launch Options Auto-Injector**: Automatically injects and cleans up `WINEDLLOVERRIDES="steam_api64=n,b;steam_api=n,b"` in Steam `localconfig.vdf` when patching/restoring Proton games!
 - 🔄 **SmokeAPI Binary Manager & Auto-Updater**: Check for SmokeAPI GitHub updates directly from the app menu and install fresh proxy binaries with 1 click.
@@ -96,7 +96,7 @@ VaporDose is a frontend management interface. We are immensely grateful to the d
 
 ---
 
-### ✨ Новые возможности v0.5.0
+### ✨ Новые возможности v0.5.x
 
 - 🚀 **Авто-инъекция параметров запуска Steam**: Автоматическое внесение и чистка `WINEDLLOVERRIDES="steam_api64=n,b;steam_api=n,b"` в файлах `localconfig.vdf` при патчинге/восстановлении Proton-игр!
 - 🔄 **Менеджер и авто-обновление SmokeAPI**: Онлайн-проверка обновлений SmokeAPI с GitHub и скачивание актуальных бинарников прямо из меню приложения в 1 клик.

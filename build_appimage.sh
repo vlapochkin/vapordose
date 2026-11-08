@@ -37,16 +37,7 @@ cp -r resources $APP_DIR/usr/bin/
 curl -L -o $APP_DIR/usr/share/icons/hicolor/scalable/apps/$BIN_NAME.svg https://raw.githubusercontent.com/GNOME/adwaita-icon-theme/master/Adwaita/scalable/apps/preferences-system-symbolic.svg
 
 # Desktop file
-cat > $APP_DIR/usr/share/applications/$BIN_NAME.desktop <<EOF
-[Desktop Entry]
-Name=$APP_NAME
-Comment=Steam DLC Automation for Linux
-Exec=$BIN_NAME
-Icon=$BIN_NAME
-Terminal=false
-Type=Application
-Categories=Utility;Game;
-EOF
+cp $BIN_NAME.desktop $APP_DIR/usr/share/applications/$BIN_NAME.desktop
 
 # Create a custom AppRun script to avoid library conflicts
 cat > $APP_DIR/AppRun <<EOF

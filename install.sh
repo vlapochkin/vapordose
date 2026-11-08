@@ -1,32 +1,34 @@
 #!/bin/bash
+# Build VaporDose from source and install it for the current user.
 
-# Ensure the script stops on errors
 set -e
 
-echo "Starting installation for CreamAPI Auto..."
+BIN_NAME="vapordose"
 
-# Build the project
-echo "Building the project..."
+echo "Building $BIN_NAME (release)..."
 cargo build --release
 
-# Ensure directories exist
-mkdir -p ~/.local/bin
-mkdir -p ~/.local/share/applications
-
-# Copy the binary
 echo "Installing binary to ~/.local/bin..."
-cp target/release/cream-api-auto ~/.local/bin/
+mkdir -p ~/.local/bin
+install -m 755 "target/release/$BIN_NAME" ~/.local/bin/
 
-# Copy the desktop file
-echo "Installing desktop entry..."
-cp creamapi-auto.desktop ~/.local/share/applications/
-
-# Update desktop database
-echo "Updating desktop database..."
-if command -v update-desktop-database &> /dev/null; then
-    update-desktop-database ~/.local/share/applications/
+# SmokeAPI binaries are looked up next to the executable (resources/) or in
+# ~/.local/share/vapordose/resources. Copy the bundled ones if present.
+if [ -d resources ] && [ -n "$(ls -A resources)" ]; then
+    echo "Installing bundled SmokeAPI resources..."
+    mkdir -p ~/.local/share/vapordose/resources
+    cp -r resources/. ~/.local/share/vapordose/resources/
 else
-    echo "update-desktop-database not found. Skipping."
+    echo "No bundled resources found; use 'Update SmokeAPI' from the app menu after first launch."
 fi
 
-echo "Installation complete! You can now run 'CreamAPI Auto' from your application menu."
+echo "Installing desktop entry..."
+mkdir -p ~/.local/share/applications
+install -m 644 "$BIN_NAME.desktop" ~/.local/share/applications/
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database ~/.local/share/applications/ || true
+fi
+
+echo "Done. Run '$BIN_NAME' or launch VaporDose from your application menu."
+echo "Make sure ~/.local/bin is in your PATH."

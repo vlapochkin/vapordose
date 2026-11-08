@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=CreamAPI Auto
-Comment=Automated SmokeAPI/CreamAPI installer for Linux
-Exec=cream-api-auto
-Icon=applications-games
-Terminal=false
-Type=Application
-Categories=Utility;Game;

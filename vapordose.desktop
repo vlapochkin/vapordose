@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=VaporDose
+Comment=Steam DLC automation and SmokeAPI manager for Linux and Steam Deck
+Exec=vapordose
+Icon=vapordose
+Terminal=false
+Type=Application
+Categories=Utility;Game;
+Keywords=Steam;DLC;SmokeAPI;CreamAPI;
