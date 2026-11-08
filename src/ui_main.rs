@@ -432,9 +432,12 @@ pub fn build_ui(app: &libadwaita::Application) {
             batch_patch_btn.set_label(trans.batch_patch);
             batch_restore_btn.set_label(trans.batch_restore);
             lang_menu_btn.set_menu_model(Some(&build_menu(trans)));
+            // Keep the user's filter across rescans; on the very first fill the model is
+            // empty and `selected()` is INVALID_LIST_POSITION, which must map to "All".
             let selected = filter_dropdown.selected();
             filter_model.splice(0, filter_model.n_items(), &[trans.filter_all, trans.filter_dlc, trans.filter_patched, trans.filter_anticheat]);
-            filter_dropdown.set_selected(selected.min(3));
+            let keep = if selected == gtk4::INVALID_LIST_POSITION { 0 } else { selected.min(3) };
+            filter_dropdown.set_selected(keep);
 
             progress_bar.set_fraction(0.1);
             scrolled_window.set_child(Some(&loading_box));
