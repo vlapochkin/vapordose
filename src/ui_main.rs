@@ -1,58 +1,301 @@
 use libadwaita::prelude::*;
-use libadwaita::{ApplicationWindow, HeaderBar, Toast, ToastOverlay, ExpanderRow, ActionRow, MessageDialog, ResponseAppearance, PreferencesGroup, StatusPage};
-use gtk4::{Box, ListBox, Orientation, ScrolledWindow, Label, Button, Align, SelectionMode, MenuButton, gio, Spinner, ProgressBar, Image, gdk, LinkButton, SearchEntry, DropDown, StringList, Entry};
+use libadwaita::{ActionRow, ApplicationWindow, ExpanderRow, HeaderBar, MessageDialog, PreferencesGroup, ResponseAppearance, StatusPage, Toast, ToastOverlay};
+use gtk4::{gdk, gio, glib, Align, Box, Button, DropDown, Entry, Image, Label, LinkButton, ListBox, MenuButton, Orientation, ProgressBar, ScrolledWindow, SearchEntry, SelectionMode, Spinner, StringList};
 use gtk4::pango::EllipsizeMode;
-use gtk4::glib;
-use std::sync::{Arc, Mutex};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::process::Command;
-use crate::steam_scanner::{SteamGame, GameType, AppCategory, discover_steam_libraries, scan_games};
-use crate::injector::Injector;
+use std::rc::Rc;
+use std::sync::Arc;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Language { EN, RU }
+use crate::config::{AppConfig, Language};
+use crate::injector::{DeployOutcome, DeployWarning, Injector};
+use crate::steam_scanner::{discover_steam_libraries, scan_games, AppCategory, GameType, SteamGame};
 
 struct Translations {
-    title: &'static str, scanning: &'static str, downloading_core: &'static str,
-    games_not_found: &'static str, apply_patch: &'static str, restore: &'static str,
-    status_patched: &'static str, status_safe: &'static str, status_warn: &'static str,
-    status_forbidden: &'static str, open_folder: &'static str, copy_params: &'static str,
-    dlc_list_title: &'static str, view_store: &'static str, view_protondb: &'static str,
-    group_games: &'static str, group_system: &'static str, confirm_title: &'static str,
-    confirm_body: &'static str, confirm_yes: &'static str, confirm_no: &'static str,
-    search_placeholder: &'static str, batch_patch: &'static str, batch_restore: &'static str,
-    edit_dlc: &'static str, filter_all: &'static str, filter_dlc: &'static str,
-    filter_patched: &'static str, filter_anticheat: &'static str, save: &'static str,
+    title: &'static str,
+    scanning: &'static str,
+    games_not_found: &'static str,
+    apply_patch: &'static str,
+    restore: &'static str,
+    status_patched: &'static str,
+    status_safe: &'static str,
+    status_warn: &'static str,
+    open_folder: &'static str,
+    copy_params: &'static str,
+    dlc_list_title: &'static str,
+    dlc_none: &'static str,
+    view_store: &'static str,
+    view_protondb: &'static str,
+    group_games: &'static str,
+    group_system: &'static str,
+    system_expander: &'static str,
+    confirm_title: &'static str,
+    confirm_body: &'static str,
+    confirm_yes: &'static str,
+    confirm_no: &'static str,
+    search_placeholder: &'static str,
+    batch_patch: &'static str,
+    batch_restore: &'static str,
+    batch_patch_heading: &'static str,
+    batch_patch_body: &'static str,
+    batch_restore_heading: &'static str,
+    batch_restore_body: &'static str,
+    /// `{n}` = count, `{f}` = failures
+    batch_patched: &'static str,
+    batch_restored: &'static str,
+    batch_nothing_to_patch: &'static str,
+    batch_nothing_to_restore: &'static str,
+    edit_dlc: &'static str,
+    edit_heading: &'static str,
+    edit_body: &'static str,
+    fetch_dlc: &'static str,
+    fetching_dlc: &'static str,
+    /// `{n}` = count
+    fetched_dlc: &'static str,
+    fetch_failed: &'static str,
+    config_saved: &'static str,
+    config_save_failed: &'static str,
+    filter_all: &'static str,
+    filter_dlc: &'static str,
+    filter_patched: &'static str,
+    filter_anticheat: &'static str,
+    save: &'static str,
+    cancel: &'static str,
+    success: &'static str,
+    restored: &'static str,
+    copied: &'static str,
+    error_prefix: &'static str,
+    warn_steam_running: &'static str,
+    warn_launch_options: &'static str,
+    menu_update_smokeapi: &'static str,
+    checking_updates: &'static str,
+    update_heading: &'static str,
+    /// `{cur}` / `{new}`
+    update_body: &'static str,
+    update_button: &'static str,
+    downloading: &'static str,
+    /// `{v}`
+    updated_to: &'static str,
+    update_error: &'static str,
+    /// `{v}`
+    up_to_date: &'static str,
+    check_error: &'static str,
 }
 
 const EN_TRANS: Translations = Translations {
-    title: "VaporDose", scanning: "Scanning Games...", downloading_core: "Updating SmokeAPI...",
-    games_not_found: "No games found.", apply_patch: "Patch DLC", restore: "Restore", status_patched: "Patched",
-    status_safe: "Safe", status_warn: "Risk", status_forbidden: "Forbidden", open_folder: "Folder",
-    copy_params: "Copy", dlc_list_title: "DLC IDs", view_store: "Store", view_protondb: "ProtonDB",
-    group_games: "Installed Games", group_system: "System Tools", confirm_title: "Warning",
-    confirm_body: "Online features detected. Proceed?", confirm_yes: "Proceed",
-    confirm_no: "Cancel", search_placeholder: "Filter games...",
-    batch_patch: "Patch All Safe", batch_restore: "Restore All", edit_dlc: "Custom Config",
-    filter_all: "All", filter_dlc: "With DLC", filter_patched: "Patched", filter_anticheat: "Anti-Cheat",
+    title: "VaporDose",
+    scanning: "Scanning games...",
+    games_not_found: "No Steam games found.",
+    apply_patch: "Patch DLC",
+    restore: "Restore",
+    status_patched: "Patched",
+    status_safe: "Safe",
+    status_warn: "Risk: anti-cheat / online",
+    open_folder: "Open folder",
+    copy_params: "Copy launch options",
+    dlc_list_title: "DLC IDs",
+    dlc_none: "None",
+    view_store: "Steam Store",
+    view_protondb: "ProtonDB",
+    group_games: "Installed games",
+    group_system: "System components",
+    system_expander: "System components and tools (Proton / SDK)",
+    confirm_title: "Warning",
+    confirm_body: "This game has anti-cheat or online features. Patching may lead to a ban. Continue?",
+    confirm_yes: "Yes",
+    confirm_no: "Cancel",
+    search_placeholder: "Search games...",
+    batch_patch: "Patch all safe",
+    batch_restore: "Restore all",
+    batch_patch_heading: "Patch all games",
+    batch_patch_body: "Patch every safe game automatically?\n\nGames with anti-cheat or online features will be skipped.",
+    batch_restore_heading: "Restore all games",
+    batch_restore_body: "Restore the original files for every patched game?",
+    batch_patched: "Patched games: {n} (failed: {f})",
+    batch_restored: "Restored games: {n} (failed: {f})",
+    batch_nothing_to_patch: "No games available for patching",
+    batch_nothing_to_restore: "No patched games to restore",
+    edit_dlc: "DLC config",
+    edit_heading: "Edit DLC list / config",
+    edit_body: "Enter DLC IDs separated by commas, or fetch them from Steam:",
+    fetch_dlc: "Fetch DLC list from Steam",
+    fetching_dlc: "Fetching DLC from Steam...",
+    fetched_dlc: "Fetched {n} DLCs",
+    fetch_failed: "No DLCs found or Steam API error",
+    config_saved: "Config saved",
+    config_save_failed: "Failed to save config",
+    filter_all: "All",
+    filter_dlc: "Has DLC",
+    filter_patched: "Patched",
+    filter_anticheat: "Anti-cheat",
     save: "Save",
+    cancel: "Cancel",
+    success: "Patched successfully",
+    restored: "Restored",
+    copied: "Copied",
+    error_prefix: "Error",
+    warn_steam_running: "Steam is running: restart it, otherwise the launch options may be lost",
+    warn_launch_options: "Could not update Steam launch options. Set them manually (copy button)",
+    menu_update_smokeapi: "Update SmokeAPI",
+    checking_updates: "Checking SmokeAPI updates...",
+    update_heading: "SmokeAPI update available",
+    update_body: "Installed: {cur}\nLatest: {new}\n\nDownload and install?",
+    update_button: "Update",
+    downloading: "Downloading SmokeAPI...",
+    updated_to: "SmokeAPI updated to {v}",
+    update_error: "Update failed",
+    up_to_date: "SmokeAPI is up to date ({v})",
+    check_error: "Update check failed",
 };
 
 const RU_TRANS: Translations = Translations {
-    title: "VaporDose", scanning: "Загрузка игр...", downloading_core: "Обновление ядра...",
-    games_not_found: "Не найдено.", apply_patch: "Патчить", restore: "Вернуть", status_patched: "Готово",
-    status_safe: "Безопасно", status_warn: "Риск", status_forbidden: "Запрещено", open_folder: "Папка",
-    copy_params: "Копировать", dlc_list_title: "ID DLC", view_store: "Магазин", view_protondb: "ProtonDB",
-    group_games: "Установленные игры", group_system: "Системные компоненты", confirm_title: "Внимание",
-    confirm_body: "В игре есть онлайн-функции. Продолжить?", confirm_yes: "Да",
-    confirm_no: "Отмена", search_placeholder: "Поиск игр...",
-    batch_patch: "Патчить все безопасные", batch_restore: "Восстановить всё", edit_dlc: "Конфиг DLC",
-    filter_all: "Все", filter_dlc: "Есть DLC", filter_patched: "Пропатчено", filter_anticheat: "Античит",
+    title: "VaporDose",
+    scanning: "Поиск игр...",
+    games_not_found: "Игры Steam не найдены.",
+    apply_patch: "Патчить",
+    restore: "Вернуть",
+    status_patched: "Готово",
+    status_safe: "Безопасно",
+    status_warn: "Риск: античит / онлайн",
+    open_folder: "Открыть папку",
+    copy_params: "Копировать параметры запуска",
+    dlc_list_title: "ID DLC",
+    dlc_none: "Нет",
+    view_store: "Магазин",
+    view_protondb: "ProtonDB",
+    group_games: "Установленные игры",
+    group_system: "Системные компоненты",
+    system_expander: "Системные компоненты и инструменты (Proton / SDK)",
+    confirm_title: "Внимание",
+    confirm_body: "В игре есть античит или онлайн-функции. Патч может привести к бану. Продолжить?",
+    confirm_yes: "Да",
+    confirm_no: "Отмена",
+    search_placeholder: "Поиск игр...",
+    batch_patch: "Патчить все безопасные",
+    batch_restore: "Восстановить всё",
+    batch_patch_heading: "Патчинг всех игр",
+    batch_patch_body: "Автоматически пропатчить все безопасные игры?\n\nИгры с античитом и сетевым режимом будут пропущены.",
+    batch_restore_heading: "Восстановление всех игр",
+    batch_restore_body: "Восстановить оригинальные файлы для всех пропатченных игр?",
+    batch_patched: "Пропатчено игр: {n} (ошибок: {f})",
+    batch_restored: "Восстановлено игр: {n} (ошибок: {f})",
+    batch_nothing_to_patch: "Нет доступных игр для патчинга",
+    batch_nothing_to_restore: "Нет пропатченных игр для восстановления",
+    edit_dlc: "Конфиг DLC",
+    edit_heading: "Редактировать список DLC / конфиг",
+    edit_body: "Введите ID DLC через запятую или загрузите их из Steam:",
+    fetch_dlc: "Загрузить список DLC из Steam",
+    fetching_dlc: "Загрузка DLC из Steam...",
+    fetched_dlc: "Загружено DLC: {n}",
+    fetch_failed: "DLC не найдены или ошибка Steam API",
+    config_saved: "Конфиг сохранён",
+    config_save_failed: "Не удалось сохранить конфиг",
+    filter_all: "Все",
+    filter_dlc: "Есть DLC",
+    filter_patched: "Пропатчено",
+    filter_anticheat: "Античит",
     save: "Сохранить",
+    cancel: "Отмена",
+    success: "Успешно пропатчено",
+    restored: "Восстановлено",
+    copied: "Скопировано",
+    error_prefix: "Ошибка",
+    warn_steam_running: "Steam запущен: перезапустите его, иначе параметры запуска могут потеряться",
+    warn_launch_options: "Не удалось обновить параметры запуска Steam. Задайте их вручную (кнопка копирования)",
+    menu_update_smokeapi: "Обновить SmokeAPI",
+    checking_updates: "Проверка обновлений SmokeAPI...",
+    update_heading: "Доступно обновление SmokeAPI",
+    update_body: "Установлена версия: {cur}\nДоступна версия: {new}\n\nЗагрузить и обновить?",
+    update_button: "Обновить",
+    downloading: "Загрузка SmokeAPI...",
+    updated_to: "SmokeAPI обновлён до {v}",
+    update_error: "Ошибка обновления",
+    up_to_date: "Установлена последняя версия SmokeAPI ({v})",
+    check_error: "Ошибка проверки обновлений",
 };
 
+fn tr(lang: Language) -> &'static Translations {
+    match lang {
+        Language::RU => &RU_TRANS,
+        Language::EN => &EN_TRANS,
+    }
+}
+
+fn warning_text(trans: &Translations, warning: DeployWarning) -> &'static str {
+    match warning {
+        DeployWarning::SteamRunning => trans.warn_steam_running,
+        DeployWarning::LaunchOptionsNotApplied => trans.warn_launch_options,
+    }
+}
+
+/// Shared UI state. Everything here lives on the GTK main thread.
+#[derive(Clone)]
+struct AppState {
+    lang: Rc<Cell<Language>>,
+    injector: Arc<Injector>,
+    games: Rc<RefCell<Vec<SteamGame>>>,
+    rows: Rc<RefCell<HashMap<String, ExpanderRow>>>,
+    toast_overlay: ToastOverlay,
+    window: ApplicationWindow,
+}
+
+impl AppState {
+    fn trans(&self) -> &'static Translations {
+        tr(self.lang.get())
+    }
+
+    fn toast(&self, text: &str) {
+        self.toast_overlay.add_toast(Toast::new(text));
+    }
+
+    fn set_patched(&self, appid: &str, patched: bool) {
+        if let Some(game) = self.games.borrow_mut().iter_mut().find(|g| g.appid == appid) {
+            game.is_patched = patched;
+        }
+    }
+
+    /// Reports the result of a patch/restore run to the user. Returns `true` on success.
+    fn report_outcome(&self, result: Result<anyhow::Result<DeployOutcome>, tokio::task::JoinError>, success_text: &str) -> bool {
+        let trans = self.trans();
+        match result {
+            Ok(Ok(outcome)) => {
+                self.toast(success_text);
+                for warning in outcome.warnings {
+                    self.toast(warning_text(trans, warning));
+                }
+                true
+            }
+            Ok(Err(e)) => {
+                self.toast(&format!("{}: {}", trans.error_prefix, e));
+                false
+            }
+            Err(_) => {
+                self.toast(trans.error_prefix);
+                false
+            }
+        }
+    }
+}
+
+fn build_menu(trans: &Translations) -> gio::Menu {
+    let m = gio::Menu::new();
+    m.append(Some("Русский"), Some("app.set_lang_ru"));
+    m.append(Some("English"), Some("app.set_lang_en"));
+    m.append(Some(trans.menu_update_smokeapi), Some("app.update_smokeapi"));
+    m
+}
+
+fn is_batch_patchable(game: &SteamGame) -> bool {
+    game.category != AppCategory::SystemTool
+        && !game.has_anticheat
+        && !game.is_online_multiplayer
+        && !game.is_patched
+        && !game.targets.is_empty()
+}
+
 pub fn build_ui(app: &libadwaita::Application) {
-    let current_lang = Arc::new(Mutex::new(Language::RU));
-    let injector = Arc::new(Injector::new());
+    let config = AppConfig::load();
 
     let window = ApplicationWindow::builder()
         .application(app)
@@ -64,13 +307,22 @@ pub fn build_ui(app: &libadwaita::Application) {
         .build();
 
     let toast_overlay = ToastOverlay::new();
+    let state = AppState {
+        lang: Rc::new(Cell::new(config.language())),
+        injector: Arc::new(Injector::new()),
+        games: Rc::new(RefCell::new(Vec::new())),
+        rows: Rc::new(RefCell::new(HashMap::new())),
+        toast_overlay: toast_overlay.clone(),
+        window: window.clone(),
+    };
+
     let main_box = Box::new(Orientation::Vertical, 0);
     let header_bar = HeaderBar::new();
     main_box.append(&header_bar);
 
     let search_box = Box::builder().margin_top(12).margin_start(24).margin_end(24).spacing(12).build();
     let search_entry = SearchEntry::builder().hexpand(true).build();
-    let filter_model = StringList::new(&["Все", "Есть DLC", "Пропатчено", "Античит"]);
+    let filter_model = StringList::new(&[]);
     let filter_dropdown = DropDown::builder().model(&filter_model).build();
     search_box.append(&search_entry);
     search_box.append(&filter_dropdown);
@@ -82,365 +334,365 @@ pub fn build_ui(app: &libadwaita::Application) {
     let games_list = ListBox::builder().selection_mode(SelectionMode::None).css_classes(vec!["boxed-list".to_string()]).build();
     games_group.add(&games_list);
     let system_group = PreferencesGroup::builder().build();
-    let system_expander = ExpanderRow::builder()
-        .title("Системные компоненты и инструменты (Proton / SDK)")
-        .enable_expansion(true)
-        .expanded(false)
-        .build();
+    let system_expander = ExpanderRow::builder().enable_expansion(true).expanded(false).build();
     let system_list = ListBox::builder().selection_mode(SelectionMode::None).css_classes(vec!["boxed-list".to_string()]).build();
     system_expander.add_row(&system_list);
     system_group.add(&system_expander);
-    content_box.append(&games_group); content_box.append(&system_group);
+    content_box.append(&games_group);
+    content_box.append(&system_group);
 
     let loading_box = Box::builder().orientation(Orientation::Vertical).spacing(20).valign(Align::Center).halign(Align::Center).build();
     let spinner = Spinner::builder().spinning(true).width_request(64).height_request(64).build();
     let loading_label = Label::builder().css_classes(vec!["title-1".to_string()]).build();
     let progress_bar = ProgressBar::builder().width_request(400).build();
-    loading_box.append(&spinner); loading_box.append(&loading_label); loading_box.append(&progress_bar);
+    loading_box.append(&spinner);
+    loading_box.append(&loading_label);
+    loading_box.append(&progress_bar);
 
-    scrolled_window.set_child(Some(&loading_box)); main_box.append(&scrolled_window);
-    toast_overlay.set_child(Some(&main_box)); window.set_content(Some(&toast_overlay));
+    let empty_page = StatusPage::builder().icon_name("system-search-symbolic").build();
 
-    let loaded_games = Arc::new(Mutex::new(Vec::<SteamGame>::new()));
+    scrolled_window.set_child(Some(&loading_box));
+    main_box.append(&scrolled_window);
+    toast_overlay.set_child(Some(&main_box));
+    window.set_content(Some(&toast_overlay));
 
-    let loaded_games_scan = loaded_games.clone();
-    let run_scan = glib::clone!(@weak games_group, @weak system_group, @weak games_list, @weak system_list, @weak scrolled_window, @weak content_box, @weak loading_box, @weak loading_label, @weak progress_bar, @weak window, @weak search_entry, @weak toast_overlay, @strong injector, @strong current_lang => move || {
-        let lang = *current_lang.lock().unwrap();
-        let trans = if lang == Language::RU { &RU_TRANS } else { &EN_TRANS };
-        window.set_title(Some(trans.title));
-        loading_label.set_label(trans.scanning);
-        search_entry.set_placeholder_text(Some(trans.search_placeholder));
-        games_group.set_title(trans.group_games);
-        system_group.set_title(trans.group_system);
-        progress_bar.set_fraction(0.1);
-        scrolled_window.set_child(Some(&loading_box));
-
-        let current_lang_inner = current_lang.clone();
-        let toast_overlay_inner = toast_overlay.clone();
-        let injector_inner = injector.clone();
-        let loaded_games_inner = loaded_games_scan.clone();
-
-        glib::spawn_future_local(async move {
-            let libraries = tokio::task::spawn_blocking(discover_steam_libraries).await.unwrap_or_default();
-            let games = scan_games(&libraries).await;
-            *loaded_games_inner.lock().unwrap() = games.clone();
-
-            progress_bar.set_fraction(0.5);
-            loading_label.set_label(if *current_lang_inner.lock().unwrap() == Language::RU { RU_TRANS.downloading_core } else { EN_TRANS.downloading_core });
-            glib::spawn_future_local(async move { let _ = crate::updater::check_and_download_core().await; });
-
-            while let Some(child) = games_list.first_child() { games_list.remove(&child); }
-            while let Some(child) = system_list.first_child() { system_list.remove(&child); }
-
-            if games.is_empty() {
-                let status_page = StatusPage::builder().icon_name("system-search-symbolic").build();
-                scrolled_window.set_child(Some(&status_page));
-            } else {
-                scrolled_window.set_child(Some(&content_box));
-                for game in games {
-                    let row = create_game_row(game.clone(), injector_inner.clone(), toast_overlay_inner.clone(), current_lang_inner.clone(), window.clone());
-                    if game.category == AppCategory::SystemTool { system_list.append(&row); }
-                    else { games_list.append(&row); }
-                }
-            }
-            progress_bar.set_fraction(1.0);
-        });
-    });
-
-    let run_scan_arc = Arc::new(run_scan);
-
-    // Filtering logic
-    let filter_func = glib::clone!(@weak games_list, @weak system_list, @weak games_group, @weak system_group, @weak search_entry, @weak filter_dropdown => move || {
-        let text = search_entry.text().to_lowercase();
-        let selected_idx = filter_dropdown.selected();
-
-        let apply_filter = |list: &ListBox, group: &PreferencesGroup| {
-            let mut any_visible = false;
-            let mut child = list.first_child();
-            while let Some(widget) = child {
-                if let Some(row) = widget.downcast_ref::<ExpanderRow>() {
-                    let title_match = text.is_empty() || row.title().to_lowercase().contains(&text);
-                    let subtitle = row.subtitle().as_str().to_string();
-
-                    let category_match = match selected_idx {
-                        1 => subtitle.contains("[DLC]"),
-                        2 => subtitle.contains("[Patched]"),
-                        3 => subtitle.contains("[Anti-Cheat]") || subtitle.contains("[Online]"),
-                        _ => true,
-                    };
-
-                    let matches = title_match && category_match;
-                    row.set_visible(matches);
-                    if matches { any_visible = true; }
-                }
-                child = widget.next_sibling();
-            }
-            group.set_visible(any_visible || (text.is_empty() && selected_idx == 0));
-        };
-
-        apply_filter(&games_list, &games_group);
-        apply_filter(&system_list, &system_group);
-    });
-
-    let filter_func_arc = Arc::new(filter_func);
-
-    let f1 = filter_func_arc.clone();
-    search_entry.connect_search_changed(move |_| f1());
-
-    let f2 = filter_func_arc.clone();
-    filter_dropdown.connect_selected_notify(move |_| f2());
-
-    let refresh_run = run_scan_arc.clone();
-    let setup_lang = glib::clone!(@weak app, @strong current_lang => move |lang: Language| {
-        *current_lang.lock().unwrap() = lang;
-        refresh_run();
-    });
-
-    let s_ru = setup_lang.clone(); app.add_action(&{let a = gio::SimpleAction::new("set_lang_ru", None); a.connect_activate(move |_, _| s_ru(Language::RU)); a});
-    let s_en = setup_lang.clone(); app.add_action(&{let a = gio::SimpleAction::new("set_lang_en", None); a.connect_activate(move |_, _| s_en(Language::EN)); a});
-
-    let overlay_smoke = toast_overlay.clone();
-    let window_smoke = window.clone();
-    let lang_smoke = current_lang.clone();
-    app.add_action(&{
-        let a = gio::SimpleAction::new("update_smokeapi", None);
-        a.connect_activate(move |_, _| {
-            let ov = overlay_smoke.clone();
-            let win = window_smoke.clone();
-            let l = lang_smoke.clone();
-            glib::spawn_future_local(async move {
-                ov.add_toast(Toast::new("Проверка обновлений SmokeAPI..."));
-                match crate::smokeapi_manager::check_for_updates().await {
-                    Ok(status) => {
-                        let is_ru = *l.lock().unwrap() == Language::RU;
-                        if status.update_available {
-                            let latest = status.latest_version.unwrap_or_default();
-                            let dialog = MessageDialog::builder()
-                                .transient_for(&win)
-                                .heading(if is_ru { "Доступно обновление SmokeAPI" } else { "SmokeAPI Update Available" })
-                                .body(if is_ru {
-                                    format!("Установлена версия: {}\nДоступна новая версия: {}\n\nЗагрузить и обновить?", status.installed_version, latest)
-                                } else {
-                                    format!("Installed: {}\nLatest: {}\n\nDownload and install?", status.installed_version, latest)
-                                })
-                                .build();
-                            dialog.add_response("cancel", if is_ru { "Отмена" } else { "Cancel" });
-                            dialog.add_response("update", if is_ru { "Обновить" } else { "Update" });
-                            dialog.set_response_appearance("update", ResponseAppearance::Suggested);
-
-                            let ov_down = ov.clone();
-                            let l_down = l.clone();
-                            dialog.connect_response(None, move |d, res| {
-                                if res == "update" {
-                                    let ov_i = ov_down.clone();
-                                    let l_i = l_down.clone();
-                                    glib::spawn_future_local(async move {
-                                        ov_i.add_toast(Toast::new("Загрузка SmokeAPI..."));
-                                        match crate::smokeapi_manager::download_and_install_latest().await {
-                                            Ok(ver) => {
-                                                let msg = if *l_i.lock().unwrap() == Language::RU {
-                                                    format!("SmokeAPI успешно обновлен до {}!", ver)
-                                                } else {
-                                                    format!("SmokeAPI updated to {}!", ver)
-                                                };
-                                                ov_i.add_toast(Toast::new(&msg));
-                                            }
-                                            Err(e) => {
-                                                ov_i.add_toast(Toast::new(&format!("Ошибка обновления: {}", e)));
-                                            }
-                                        }
-                                    });
-                                }
-                                d.close();
-                            });
-                            dialog.present();
-                        } else {
-                            let msg = if is_ru {
-                                format!("У вас установлена последняя версия SmokeAPI ({})", status.installed_version)
-                            } else {
-                                format!("SmokeAPI is up to date ({})", status.installed_version)
-                            };
-                            ov.add_toast(Toast::new(&msg));
-                        }
-                    }
-                    Err(e) => {
-                        ov.add_toast(Toast::new(&format!("Ошибка проверки: {}", e)));
-                    }
-                }
-            });
-        });
-        a
-    });
-
-    let lang_menu_btn = MenuButton::builder().icon_name("view-more-symbolic").menu_model(&{
-        let m = gio::Menu::new();
-        m.append(Some("Русский"), Some("app.set_lang_ru"));
-        m.append(Some("English"), Some("app.set_lang_en"));
-        m.append(Some("Обновить SmokeAPI"), Some("app.update_smokeapi"));
-        m
-    }).build();
+    let lang_menu_btn = MenuButton::builder().icon_name("open-menu-symbolic").build();
+    let batch_patch_btn = Button::builder().css_classes(vec!["suggested-action".to_string()]).build();
+    let batch_restore_btn = Button::builder().css_classes(vec!["destructive-action".to_string()]).build();
+    let refresh_button = Button::builder().icon_name("view-refresh-symbolic").build();
     header_bar.pack_start(&lang_menu_btn);
-
-    // Batch buttons in HeaderBar
-    let batch_patch_btn = Button::builder().label("Патчить всё").css_classes(vec!["suggested-action".to_string()]).build();
-    let batch_restore_btn = Button::builder().label("Восстановить всё").css_classes(vec!["destructive-action".to_string()]).build();
-
-    let loaded_games_patch = loaded_games.clone();
-    let injector_batch_p = injector.clone();
-    let overlay_batch_p = toast_overlay.clone();
-    let scan_trigger_p = run_scan_arc.clone();
-    let window_p = window.clone();
-
-    batch_patch_btn.connect_clicked(move |_| {
-        let dialog = MessageDialog::builder()
-            .transient_for(&window_p)
-            .heading("Патчинг всех игр")
-            .body("Вы действительно хотите автоматически пропатчить все доступные безопасные игры?\n\nИгры с античитом и сетевым режимом будут автоматически пропущены.")
-            .build();
-        
-        dialog.add_response("cancel", "Отмена");
-        dialog.add_response("patch", "Пропатчить всё");
-        dialog.set_response_appearance("patch", ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-
-        let games_store = loaded_games_patch.clone();
-        let injector = injector_batch_p.clone();
-        let overlay = overlay_batch_p.clone();
-        let refresh = scan_trigger_p.clone();
-
-        dialog.connect_response(None, move |_, response| {
-            if response == "patch" {
-                let games = games_store.lock().unwrap().clone();
-                let injector = injector.clone();
-                let overlay = overlay.clone();
-                let refresh = refresh.clone();
-
-                glib::spawn_future_local(async move {
-                    let count = tokio::task::spawn_blocking(move || {
-                        let mut patched = 0;
-                        for game in games {
-                            if game.category != AppCategory::SystemTool 
-                                && !game.has_anticheat 
-                                && !game.is_online_multiplayer
-                                && !game.is_patched 
-                                && !game.targets.is_empty() 
-                            {
-                                if injector.backup_and_deploy(&game).is_ok() {
-                                    patched += 1;
-                                }
-                            }
-                        }
-                        patched
-                    }).await.unwrap_or(0);
-
-                    if count > 0 {
-                        overlay.add_toast(Toast::new(&format!("Успешно пропатчено игр: {}", count)));
-                    } else {
-                        overlay.add_toast(Toast::new("Нет доступных игр для патчинга"));
-                    }
-                    refresh();
-                });
-            }
-        });
-
-        dialog.present();
-    });
-
-    let loaded_games_restore = loaded_games.clone();
-    let injector_batch_r = injector.clone();
-    let overlay_batch_r = toast_overlay.clone();
-    let scan_trigger_r = run_scan_arc.clone();
-    let window_r = window.clone();
-
-    batch_restore_btn.connect_clicked(move |_| {
-        let dialog = MessageDialog::builder()
-            .transient_for(&window_r)
-            .heading("Восстановление всех игр")
-            .body("Вы уверены, что хотите восстановить оригинальные файлы для всех пропатченных игр?")
-            .build();
-        
-        dialog.add_response("cancel", "Отмена");
-        dialog.add_response("restore", "Восстановить всё");
-        dialog.set_response_appearance("restore", ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-
-        let games_store = loaded_games_restore.clone();
-        let injector = injector_batch_r.clone();
-        let overlay = overlay_batch_r.clone();
-        let refresh = scan_trigger_r.clone();
-
-        dialog.connect_response(None, move |_, response| {
-            if response == "restore" {
-                let games = games_store.lock().unwrap().clone();
-                let injector = injector.clone();
-                let overlay = overlay.clone();
-                let refresh = refresh.clone();
-
-                glib::spawn_future_local(async move {
-                    let count = tokio::task::spawn_blocking(move || {
-                        let mut restored = 0;
-                        for game in games {
-                            if game.is_patched {
-                                if injector.restore_original(&game).is_ok() {
-                                    restored += 1;
-                                }
-                            }
-                        }
-                        restored
-                    }).await.unwrap_or(0);
-
-                    if count > 0 {
-                        overlay.add_toast(Toast::new(&format!("Восстановлено игр: {}", count)));
-                    } else {
-                        overlay.add_toast(Toast::new("Нет пропатченных игр для восстановления"));
-                    }
-                    refresh();
-                });
-            }
-        });
-
-        dialog.present();
-    });
-
     header_bar.pack_start(&batch_patch_btn);
     header_bar.pack_start(&batch_restore_btn);
-
-    let refresh_button = Button::builder().icon_name("view-refresh-symbolic").build();
-    let scan_trigger = run_scan_arc.clone();
-    refresh_button.connect_clicked(move |_| scan_trigger());
     header_bar.pack_end(&refresh_button);
 
-    run_scan_arc();
+    // --- Filtering: driven by game data, not by subtitle text ---
+    let filter_func: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let search_entry = search_entry.clone();
+        let filter_dropdown = filter_dropdown.clone();
+        let games_group = games_group.clone();
+        let system_group = system_group.clone();
+        Rc::new(move || {
+            let text = search_entry.text().to_lowercase();
+            let selected_idx = filter_dropdown.selected();
+            let rows = state.rows.borrow();
+            let mut any_game_visible = false;
+            let mut any_system_visible = false;
+
+            for game in state.games.borrow().iter() {
+                let Some(row) = rows.get(&game.appid) else { continue };
+                let title_match = text.is_empty() || game.name.to_lowercase().contains(&text);
+                let category_match = match selected_idx {
+                    1 => !game.dlc_list.is_empty(),
+                    2 => game.is_patched,
+                    3 => game.has_anticheat || game.is_online_multiplayer,
+                    _ => true,
+                };
+                let visible = title_match && category_match;
+                row.set_visible(visible);
+                if visible {
+                    if game.category == AppCategory::SystemTool { any_system_visible = true; } else { any_game_visible = true; }
+                }
+            }
+            games_group.set_visible(any_game_visible);
+            system_group.set_visible(any_system_visible);
+        })
+    };
+
+    // --- Rescan everything and rebuild the list (also re-applies the current language) ---
+    let run_scan: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let search_entry = search_entry.clone();
+        let filter_model = filter_model.clone();
+        let filter_dropdown = filter_dropdown.clone();
+        let games_group = games_group.clone();
+        let system_group = system_group.clone();
+        let system_expander = system_expander.clone();
+        let games_list = games_list.clone();
+        let system_list = system_list.clone();
+        let scrolled_window = scrolled_window.clone();
+        let content_box = content_box.clone();
+        let loading_box = loading_box.clone();
+        let loading_label = loading_label.clone();
+        let progress_bar = progress_bar.clone();
+        let empty_page = empty_page.clone();
+        let lang_menu_btn = lang_menu_btn.clone();
+        let batch_patch_btn = batch_patch_btn.clone();
+        let batch_restore_btn = batch_restore_btn.clone();
+        let filter_func = filter_func.clone();
+        Rc::new(move || {
+            let trans = state.trans();
+            state.window.set_title(Some(trans.title));
+            loading_label.set_label(trans.scanning);
+            search_entry.set_placeholder_text(Some(trans.search_placeholder));
+            games_group.set_title(trans.group_games);
+            system_group.set_title(trans.group_system);
+            system_expander.set_title(trans.system_expander);
+            empty_page.set_title(trans.games_not_found);
+            batch_patch_btn.set_label(trans.batch_patch);
+            batch_restore_btn.set_label(trans.batch_restore);
+            lang_menu_btn.set_menu_model(Some(&build_menu(trans)));
+            let selected = filter_dropdown.selected();
+            filter_model.splice(0, filter_model.n_items(), &[trans.filter_all, trans.filter_dlc, trans.filter_patched, trans.filter_anticheat]);
+            filter_dropdown.set_selected(selected.min(3));
+
+            progress_bar.set_fraction(0.1);
+            scrolled_window.set_child(Some(&loading_box));
+
+            let state = state.clone();
+            let games_list = games_list.clone();
+            let system_list = system_list.clone();
+            let scrolled_window = scrolled_window.clone();
+            let content_box = content_box.clone();
+            let progress_bar = progress_bar.clone();
+            let empty_page = empty_page.clone();
+            let filter_func = filter_func.clone();
+
+            glib::spawn_future_local(async move {
+                let libraries = tokio::task::spawn_blocking(discover_steam_libraries).await.unwrap_or_default();
+                progress_bar.set_fraction(0.3);
+                let games = scan_games(&libraries).await;
+                progress_bar.set_fraction(0.9);
+
+                while let Some(child) = games_list.first_child() { games_list.remove(&child); }
+                while let Some(child) = system_list.first_child() { system_list.remove(&child); }
+                state.rows.borrow_mut().clear();
+
+                if games.is_empty() {
+                    scrolled_window.set_child(Some(&empty_page));
+                } else {
+                    scrolled_window.set_child(Some(&content_box));
+                    for game in &games {
+                        let row = create_game_row(game.clone(), state.clone());
+                        if game.category == AppCategory::SystemTool { system_list.append(&row); } else { games_list.append(&row); }
+                        state.rows.borrow_mut().insert(game.appid.clone(), row);
+                    }
+                }
+                *state.games.borrow_mut() = games;
+                filter_func();
+                progress_bar.set_fraction(1.0);
+            });
+        })
+    };
+
+    {
+        let f = filter_func.clone();
+        search_entry.connect_search_changed(move |_| f());
+        let f = filter_func.clone();
+        filter_dropdown.connect_selected_notify(move |_| f());
+    }
+
+    // --- Language actions (persisted to ~/.config/vapordose/config.json) ---
+    for (name, lang) in [("set_lang_ru", Language::RU), ("set_lang_en", Language::EN)] {
+        let action = gio::SimpleAction::new(name, None);
+        let state = state.clone();
+        let run_scan = run_scan.clone();
+        action.connect_activate(move |_, _| {
+            if state.lang.get() == lang { return; }
+            state.lang.set(lang);
+            AppConfig { language: Some(lang) }.save();
+            run_scan();
+        });
+        app.add_action(&action);
+    }
+
+    // --- SmokeAPI update action ---
+    {
+        let action = gio::SimpleAction::new("update_smokeapi", None);
+        let state = state.clone();
+        action.connect_activate(move |_, _| {
+            let state = state.clone();
+            glib::spawn_future_local(async move {
+                let trans = state.trans();
+                state.toast(trans.checking_updates);
+                let status = match crate::smokeapi_manager::check_for_updates().await {
+                    Ok(status) => status,
+                    Err(e) => { state.toast(&format!("{}: {}", trans.check_error, e)); return; }
+                };
+                if !status.update_available {
+                    state.toast(&trans.up_to_date.replace("{v}", &status.installed_version));
+                    return;
+                }
+                let latest = status.latest_version.unwrap_or_default();
+                let dialog = MessageDialog::builder()
+                    .transient_for(&state.window)
+                    .heading(trans.update_heading)
+                    .body(trans.update_body.replace("{cur}", &status.installed_version).replace("{new}", &latest))
+                    .build();
+                dialog.add_response("cancel", trans.cancel);
+                dialog.add_response("update", trans.update_button);
+                dialog.set_response_appearance("update", ResponseAppearance::Suggested);
+                dialog.set_default_response(Some("update"));
+                dialog.set_close_response("cancel");
+
+                let state = state.clone();
+                dialog.connect_response(None, move |d, res| {
+                    d.close();
+                    if res != "update" { return; }
+                    let state = state.clone();
+                    glib::spawn_future_local(async move {
+                        let trans = state.trans();
+                        state.toast(trans.downloading);
+                        match crate::smokeapi_manager::download_and_install_latest().await {
+                            Ok(ver) => state.toast(&trans.updated_to.replace("{v}", &ver)),
+                            Err(e) => state.toast(&format!("{}: {}", trans.update_error, e)),
+                        }
+                    });
+                });
+                dialog.present();
+            });
+        });
+        app.add_action(&action);
+    }
+
+    // --- Batch patch ---
+    {
+        let state = state.clone();
+        let run_scan = run_scan.clone();
+        batch_patch_btn.connect_clicked(move |_| {
+            let trans = state.trans();
+            let dialog = MessageDialog::builder()
+                .transient_for(&state.window)
+                .heading(trans.batch_patch_heading)
+                .body(trans.batch_patch_body)
+                .build();
+            dialog.add_response("cancel", trans.cancel);
+            dialog.add_response("patch", trans.batch_patch);
+            dialog.set_response_appearance("patch", ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+
+            let state = state.clone();
+            let run_scan = run_scan.clone();
+            dialog.connect_response(None, move |d, response| {
+                d.close();
+                if response != "patch" { return; }
+                let games: Vec<SteamGame> = state.games.borrow().iter().filter(|g| is_batch_patchable(g)).cloned().collect();
+                let trans = state.trans();
+                if games.is_empty() {
+                    state.toast(trans.batch_nothing_to_patch);
+                    return;
+                }
+                let injector = state.injector.clone();
+                let state = state.clone();
+                let run_scan = run_scan.clone();
+                glib::spawn_future_local(async move {
+                    let (ok, failed, first_error) = tokio::task::spawn_blocking(move || {
+                        let (mut ok, mut failed, mut first_error) = (0usize, 0usize, None);
+                        for game in games {
+                            match injector.backup_and_deploy(&game) {
+                                Ok(_) => ok += 1,
+                                Err(e) => {
+                                    failed += 1;
+                                    if first_error.is_none() { first_error = Some(format!("{}: {}", game.name, e)); }
+                                }
+                            }
+                        }
+                        (ok, failed, first_error)
+                    }).await.unwrap_or((0, 0, None));
+
+                    state.toast(&trans.batch_patched.replace("{n}", &ok.to_string()).replace("{f}", &failed.to_string()));
+                    if let Some(err) = first_error { state.toast(&format!("{}: {}", trans.error_prefix, err)); }
+                    run_scan();
+                });
+            });
+            dialog.present();
+        });
+    }
+
+    // --- Batch restore ---
+    {
+        let state = state.clone();
+        let run_scan = run_scan.clone();
+        batch_restore_btn.connect_clicked(move |_| {
+            let trans = state.trans();
+            let dialog = MessageDialog::builder()
+                .transient_for(&state.window)
+                .heading(trans.batch_restore_heading)
+                .body(trans.batch_restore_body)
+                .build();
+            dialog.add_response("cancel", trans.cancel);
+            dialog.add_response("restore", trans.batch_restore);
+            dialog.set_response_appearance("restore", ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+
+            let state = state.clone();
+            let run_scan = run_scan.clone();
+            dialog.connect_response(None, move |d, response| {
+                d.close();
+                if response != "restore" { return; }
+                let games: Vec<SteamGame> = state.games.borrow().iter().filter(|g| g.is_patched).cloned().collect();
+                let trans = state.trans();
+                if games.is_empty() {
+                    state.toast(trans.batch_nothing_to_restore);
+                    return;
+                }
+                let injector = state.injector.clone();
+                let state = state.clone();
+                let run_scan = run_scan.clone();
+                glib::spawn_future_local(async move {
+                    let (ok, failed, first_error) = tokio::task::spawn_blocking(move || {
+                        let (mut ok, mut failed, mut first_error) = (0usize, 0usize, None);
+                        for game in games {
+                            match injector.restore_original(&game) {
+                                Ok(_) => ok += 1,
+                                Err(e) => {
+                                    failed += 1;
+                                    if first_error.is_none() { first_error = Some(format!("{}: {}", game.name, e)); }
+                                }
+                            }
+                        }
+                        (ok, failed, first_error)
+                    }).await.unwrap_or((0, 0, None));
+
+                    state.toast(&trans.batch_restored.replace("{n}", &ok.to_string()).replace("{f}", &failed.to_string()));
+                    if let Some(err) = first_error { state.toast(&format!("{}: {}", trans.error_prefix, err)); }
+                    run_scan();
+                });
+            });
+            dialog.present();
+        });
+    }
+
+    {
+        let run_scan = run_scan.clone();
+        refresh_button.connect_clicked(move |_| run_scan());
+    }
+
+    run_scan();
     window.present();
 }
 
-fn create_game_row(game: SteamGame, injector: Arc<Injector>, toast_overlay: ToastOverlay, current_lang: Arc<Mutex<Language>>, window: ApplicationWindow) -> ExpanderRow {
-    let lang_val = *current_lang.lock().unwrap();
-    let trans = if lang_val == Language::RU { &RU_TRANS } else { &EN_TRANS };
-    
+fn create_game_row(game: SteamGame, state: AppState) -> ExpanderRow {
+    let trans = state.trans();
+
     let mut subtitle_info = Vec::new();
     if game.is_patched { subtitle_info.push("[Patched]"); }
     if !game.dlc_list.is_empty() { subtitle_info.push("[DLC]"); }
-    if game.has_anticheat { subtitle_info.push("[Anti-Cheat]"); }
-    if game.is_online_multiplayer { subtitle_info.push("[Online]"); }
+    if let Some(ac) = &game.anticheat_name { subtitle_info.push(ac.as_str()); }
 
     let full_subtitle = format!("{} {}", game.install_dir.to_string_lossy(), subtitle_info.join(" "));
-    let escaped_title = glib::markup_escape_text(&game.name);
-    let escaped_subtitle = glib::markup_escape_text(&full_subtitle);
-    let row = ExpanderRow::builder().title(escaped_title).subtitle(escaped_subtitle).focusable(true).build();
+    let row = ExpanderRow::builder()
+        .title(glib::markup_escape_text(&game.name))
+        .subtitle(glib::markup_escape_text(&full_subtitle))
+        .focusable(true)
+        .build();
 
     if let Some(child) = row.first_child() {
         if let Some(box_widget) = child.downcast_ref::<Box>() {
             let mut next = box_widget.first_child();
             while let Some(w) = next {
-                if let Some(lbl) = w.downcast_ref::<Label>() { lbl.set_ellipsize(EllipsizeMode::End); lbl.set_max_width_chars(45); }
+                if let Some(lbl) = w.downcast_ref::<Label>() {
+                    lbl.set_ellipsize(EllipsizeMode::End);
+                    lbl.set_max_width_chars(45);
+                }
                 next = w.next_sibling();
             }
         }
     }
 
+    // --- Prefix: icon + folder button ---
     let prefix_box = Box::new(Orientation::Horizontal, 12);
     let icon_img = Image::builder().width_request(40).height_request(40).build();
     let mut icon_loaded = false;
@@ -454,19 +706,15 @@ fn create_game_row(game: SteamGame, injector: Arc<Injector>, toast_overlay: Toas
             icon_loaded = true;
         }
     }
-
     if !icon_loaded {
         if let Some(path) = &game.icon_path {
-            if let Ok(texture) = gdk::Texture::from_filename(path) {
-                icon_img.set_paintable(Some(&texture));
-                icon_loaded = true;
-            } else {
-                icon_img.set_from_file(Some(path));
-                icon_loaded = true;
+            match gdk::Texture::from_filename(path) {
+                Ok(texture) => icon_img.set_paintable(Some(&texture)),
+                Err(_) => icon_img.set_from_file(Some(path)),
             }
+            icon_loaded = true;
         }
     }
-
     if !icon_loaded {
         icon_img.set_pixel_size(40);
         icon_img.set_icon_name(Some("input-gaming-symbolic"));
@@ -474,201 +722,240 @@ fn create_game_row(game: SteamGame, injector: Arc<Injector>, toast_overlay: Toas
     prefix_box.append(&icon_img);
 
     let folder_btn = Button::builder().icon_name("folder-open-symbolic").css_classes(vec!["flat".to_string()]).tooltip_text(trans.open_folder).focusable(true).build();
-    let dir_clone = game.install_dir.clone();
-    folder_btn.connect_clicked(move |_| { Command::new("xdg-open").arg(&dir_clone).spawn().ok(); });
+    {
+        let dir = game.install_dir.clone();
+        folder_btn.connect_clicked(move |_| { Command::new("xdg-open").arg(&dir).spawn().ok(); });
+    }
     prefix_box.append(&folder_btn);
     row.add_prefix(&prefix_box);
 
+    // --- Suffix: status dot + action buttons ---
     let suffix_box = Box::new(Orientation::Horizontal, 8);
     suffix_box.set_valign(Align::Center);
     let (status_color, status_text, can_patch) = match game.category {
         AppCategory::SystemTool => ("error", trans.group_system, false),
-        _ => if game.has_anticheat { ("warning", trans.status_warn, true) } else { ("success", trans.status_safe, true) },
+        _ if game.has_anticheat => ("warning", trans.status_warn, true),
+        _ => ("success", trans.status_safe, true),
     };
     let status_dot = Label::builder().label("●").css_classes(vec![status_color.to_string(), "title-1".to_string()]).tooltip_text(status_text).build();
     suffix_box.append(&status_dot);
     let apply_btn = Button::builder().css_classes(vec!["suggested-action".to_string()]).focusable(true).build();
     let restore_btn = Button::builder().label(trans.restore).css_classes(vec!["destructive-action".to_string()]).focusable(true).build();
     let copy_btn = Button::builder().icon_name("edit-copy-symbolic").tooltip_text(trans.copy_params).focusable(true).build();
-    suffix_box.append(&apply_btn); suffix_box.append(&restore_btn); suffix_box.append(&copy_btn);
+    suffix_box.append(&apply_btn);
+    suffix_box.append(&restore_btn);
+    suffix_box.append(&copy_btn);
     row.add_suffix(&suffix_box);
 
+    // --- Expanded details: DLC list + links ---
     let details_group = PreferencesGroup::builder().margin_top(12).margin_bottom(12).build();
-    let dlc_text = if game.dlc_list.is_empty() { "None".to_string() } else { game.dlc_list.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ") };
-    let dlc_row = ActionRow::builder().title(trans.dlc_list_title).subtitle(dlc_text.clone()).build();
-
+    let dlc_text = if game.dlc_list.is_empty() {
+        trans.dlc_none.to_string()
+    } else {
+        game.dlc_list.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let dlc_row = ActionRow::builder().title(trans.dlc_list_title).subtitle(&dlc_text).build();
     let edit_dlc_btn = Button::builder().label(trans.edit_dlc).css_classes(vec!["flat".to_string()]).focusable(true).build();
-    let injector_edit = injector.clone();
-    let game_edit = game.clone();
-    let overlay_edit = toast_overlay.clone();
-    let window_edit = window.clone();
-    let lang_edit = current_lang.clone();
-    let dlc_row_edit = dlc_row.clone();
+    {
+        let state = state.clone();
+        let game = game.clone();
+        let dlc_row = dlc_row.clone();
+        let initial_ids = if game.dlc_list.is_empty() { String::new() } else { dlc_text.clone() };
+        edit_dlc_btn.connect_clicked(move |_| {
+            let trans = state.trans();
+            let dialog = MessageDialog::builder()
+                .transient_for(&state.window)
+                .heading(trans.edit_heading)
+                .body(trans.edit_body)
+                .build();
 
-    edit_dlc_btn.connect_clicked(move |_| {
-        let dialog = MessageDialog::builder()
-            .transient_for(&window_edit)
-            .heading("Редактировать списки DLC / Конфиг")
-            .body("Введите ID DLC через запятую или загрузите автоматически из Steam:")
-            .build();
-        
-        let container = Box::new(Orientation::Vertical, 12);
-        container.set_margin_top(12);
-        container.set_margin_start(24);
-        container.set_margin_end(24);
+            let container = Box::new(Orientation::Vertical, 12);
+            container.set_margin_top(12);
+            container.set_margin_start(24);
+            container.set_margin_end(24);
 
-        let entry = Entry::builder().text(&dlc_text).focusable(true).build();
-        let fetch_btn = Button::builder()
-            .label("🌐 Загрузить список DLC из Steam")
-            .css_classes(vec!["suggested-action".to_string()])
-            .focusable(true)
-            .build();
+            let current = dlc_row.subtitle().map(|s| s.to_string()).unwrap_or_default();
+            let entry_text = if current == trans.dlc_none { initial_ids.clone() } else { current };
+            let entry = Entry::builder().text(&entry_text).focusable(true).build();
+            let fetch_btn = Button::builder().label(trans.fetch_dlc).css_classes(vec!["suggested-action".to_string()]).focusable(true).build();
 
-        let entry_clone = entry.clone();
-        let appid_clone = game_edit.appid.clone();
-        let ov_fetch = overlay_edit.clone();
-        let l_fetch = lang_edit.clone();
-
-        fetch_btn.connect_clicked(move |btn| {
-            let entry_inner = entry_clone.clone();
-            let appid_inner = appid_clone.clone();
-            let ov_inner = ov_fetch.clone();
-            let l_inner = l_fetch.clone();
-            let btn_inner = btn.clone();
-
-            btn.set_sensitive(false);
-            btn.set_label("Загрузка DLC из Steam...");
-
-            glib::spawn_future_local(async move {
-                let fetcher = crate::steam_api::SteamApiFetcher::new();
-                match fetcher.fetch_dlcs_for_app(&appid_inner).await {
-                    Ok(dlcs) if !dlcs.is_empty() => {
-                        let ids_str = dlcs.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>().join(", ");
-                        entry_inner.set_text(&ids_str);
-                        let is_ru = *l_inner.lock().unwrap() == Language::RU;
-                        let msg = if is_ru { format!("Успешно загружено DLC: {}", dlcs.len()) } else { format!("Fetched {} DLCs!", dlcs.len()) };
-                        ov_inner.add_toast(Toast::new(&msg));
-                    }
-                    _ => {
-                        let is_ru = *l_inner.lock().unwrap() == Language::RU;
-                        let msg = if is_ru { "DLC не найдены или ошибка Steam API" } else { "No DLCs found or Steam API error" };
-                        ov_inner.add_toast(Toast::new(&msg));
-                    }
-                }
-                btn_inner.set_label("🌐 Загрузить список DLC из Steam");
-                btn_inner.set_sensitive(true);
-            });
-        });
-
-        container.append(&entry);
-        container.append(&fetch_btn);
-        dialog.set_extra_child(Some(&container));
-        
-        dialog.add_response("cancel", "Отмена");
-        dialog.add_response("save", "Сохранить");
-        dialog.set_response_appearance("save", ResponseAppearance::Suggested);
-
-        let inj = injector_edit.clone();
-        let g = game_edit.clone();
-        let ov = overlay_edit.clone();
-        let l = lang_edit.clone();
-        let dr = dlc_row_edit.clone();
-
-        dialog.connect_response(None, move |d, res| {
-            if res == "save" {
-                let text = entry.text().to_string();
-                if let Ok(_) = inj.save_custom_config(&g, &text) {
-                    dr.set_subtitle(&text);
-                    ov.add_toast(Toast::new(if *l.lock().unwrap() == Language::RU { "Конфиг сохранен!" } else { "Config saved!" }));
-                }
+            {
+                let entry = entry.clone();
+                let appid = game.appid.clone();
+                let state = state.clone();
+                fetch_btn.connect_clicked(move |btn| {
+                    let trans = state.trans();
+                    btn.set_sensitive(false);
+                    btn.set_label(trans.fetching_dlc);
+                    let entry = entry.clone();
+                    let appid = appid.clone();
+                    let state = state.clone();
+                    let btn = btn.clone();
+                    glib::spawn_future_local(async move {
+                        let fetcher = crate::steam_api::SteamApiFetcher::new();
+                        match fetcher.fetch_dlcs_for_app(&appid).await {
+                            Ok(dlcs) if !dlcs.is_empty() => {
+                                let ids_str = dlcs.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>().join(", ");
+                                entry.set_text(&ids_str);
+                                state.toast(&trans.fetched_dlc.replace("{n}", &dlcs.len().to_string()));
+                            }
+                            Ok(_) => state.toast(trans.fetch_failed),
+                            Err(e) => state.toast(&format!("{}: {}", trans.fetch_failed, e)),
+                        }
+                        btn.set_label(trans.fetch_dlc);
+                        btn.set_sensitive(true);
+                    });
+                });
             }
-            d.close();
-        });
-        dialog.present();
-    });
 
+            container.append(&entry);
+            container.append(&fetch_btn);
+            dialog.set_extra_child(Some(&container));
+            dialog.add_response("cancel", trans.cancel);
+            dialog.add_response("save", trans.save);
+            dialog.set_response_appearance("save", ResponseAppearance::Suggested);
+            dialog.set_close_response("cancel");
+
+            let state = state.clone();
+            let game = game.clone();
+            let dlc_row = dlc_row.clone();
+            dialog.connect_response(None, move |d, res| {
+                d.close();
+                if res != "save" { return; }
+                let trans = state.trans();
+                let text = entry.text().to_string();
+                match state.injector.save_custom_config(&game, &text) {
+                    Ok(()) => {
+                        dlc_row.set_subtitle(if text.trim().is_empty() { trans.dlc_none } else { &text });
+                        state.toast(trans.config_saved);
+                    }
+                    Err(e) => state.toast(&format!("{}: {}", trans.config_save_failed, e)),
+                }
+            });
+            dialog.present();
+        });
+    }
     dlc_row.add_suffix(&edit_dlc_btn);
     details_group.add(&dlc_row);
 
     let links_box = Box::new(Orientation::Horizontal, 12);
-    links_box.set_margin_start(12); links_box.set_margin_bottom(12);
-    let store_btn = LinkButton::with_label(&format!("https://store.steampowered.com/app/{}", game.appid), trans.view_store);
-    let proton_btn = LinkButton::with_label(&format!("https://www.protondb.com/app/{}", game.appid), trans.view_protondb);
-    links_box.append(&store_btn); links_box.append(&proton_btn);
+    links_box.set_margin_start(12);
+    links_box.set_margin_bottom(12);
+    links_box.append(&LinkButton::with_label(&format!("https://store.steampowered.com/app/{}", game.appid), trans.view_store));
+    links_box.append(&LinkButton::with_label(&format!("https://www.protondb.com/app/{}", game.appid), trans.view_protondb));
     let expanded_box = Box::new(Orientation::Vertical, 0);
-    expanded_box.append(&details_group); expanded_box.append(&links_box);
+    expanded_box.append(&details_group);
+    expanded_box.append(&links_box);
     row.add_row(&expanded_box);
 
-    let game_type_val = game.game_type.clone();
-    let update_row_state = glib::clone!(@weak apply_btn, @weak restore_btn, @weak copy_btn, @strong current_lang => move |is_patched: bool| {
-        let lang = *current_lang.lock().unwrap();
-        let trans = if lang == Language::RU { &RU_TRANS } else { &EN_TRANS };
-        if is_patched {
-            apply_btn.set_label(trans.status_patched); apply_btn.set_sensitive(false);
-            restore_btn.set_sensitive(true); copy_btn.set_visible(game_type_val == GameType::Proton);
-        } else {
-            apply_btn.set_label(trans.apply_patch); apply_btn.set_sensitive(can_patch);
-            restore_btn.set_sensitive(false); copy_btn.set_visible(false);
-        }
-    });
+    // --- Button state ---
+    let has_proton_target = game.game_type == GameType::Proton || game.game_type == GameType::Mixed;
+    let update_row_state: Rc<dyn Fn(bool)> = {
+        let apply_btn = apply_btn.clone();
+        let restore_btn = restore_btn.clone();
+        let copy_btn = copy_btn.clone();
+        let state = state.clone();
+        let appid = game.appid.clone();
+        Rc::new(move |is_patched: bool| {
+            let trans = state.trans();
+            state.set_patched(&appid, is_patched);
+            if is_patched {
+                apply_btn.set_label(trans.status_patched);
+                apply_btn.set_sensitive(false);
+                restore_btn.set_sensitive(true);
+                copy_btn.set_visible(has_proton_target);
+            } else {
+                apply_btn.set_label(trans.apply_patch);
+                apply_btn.set_sensitive(can_patch);
+                restore_btn.set_sensitive(false);
+                copy_btn.set_visible(false);
+            }
+        })
+    };
     update_row_state(game.is_patched);
 
-    let injector_c = injector.clone(); let game_c = game.clone(); let overlay_c = toast_overlay.clone(); let lang_c = current_lang.clone();
-    copy_btn.connect_clicked(move |_| {
-        if let Some(instr) = injector_c.get_proton_instructions(&game_c) {
-            if let Some(display) = gdk::Display::default() { display.clipboard().set_text(&instr); overlay_c.add_toast(Toast::new(if *lang_c.lock().unwrap() == Language::RU { "Скопировано!" } else { "Copied!" })); }
-        }
-    });
-
-    let injector_p = injector.clone(); let game_p = game.clone(); let overlay_p = toast_overlay.clone(); 
-    let apply_btn_p = apply_btn.clone(); let restore_btn_p = restore_btn.clone(); let copy_btn_p = copy_btn.clone();
-    let window_p = window.clone(); let lang_p = current_lang.clone();
-    apply_btn.connect_clicked(move |_| {
-        let injector = injector_p.clone(); let game = game_p.clone(); let overlay = overlay_p.clone();
-        let apply_btn = apply_btn_p.clone(); let restore_btn = restore_btn_p.clone(); let copy_btn = copy_btn_p.clone();
-        let lang_f = lang_p.clone();
-        let proceed = move || {
-            let injector_i = injector.clone(); let game_i = game.clone(); let overlay_i = overlay.clone();
-            let apply_btn_i = apply_btn.clone(); let restore_btn_i = restore_btn.clone(); let copy_btn_i = copy_btn.clone();
-            let lang_i = lang_f.clone();
-            glib::spawn_future_local(async move {
-                let game_t = game_i.clone();
-                let res = tokio::task::spawn_blocking(move || injector_i.backup_and_deploy(&game_t)).await.unwrap();
-                if res.is_ok() { 
-                    let t = if *lang_i.lock().unwrap() == Language::RU { &RU_TRANS } else { &EN_TRANS };
-                    apply_btn_i.set_label(t.status_patched); apply_btn_i.set_sensitive(false);
-                    restore_btn_i.set_sensitive(true); copy_btn_i.set_visible(game_i.game_type == GameType::Proton);
-                    overlay_i.add_toast(Toast::new(if *lang_i.lock().unwrap() == Language::RU { "Успешно!" } else { "Success!" })); 
+    {
+        let state = state.clone();
+        let game = game.clone();
+        copy_btn.connect_clicked(move |_| {
+            if let Some(instr) = state.injector.get_proton_instructions(&game) {
+                if let Some(display) = gdk::Display::default() {
+                    display.clipboard().set_text(&instr);
+                    state.toast(state.trans().copied);
                 }
-            });
-        };
-        if game_p.is_online_multiplayer {
-            let t = if *lang_p.lock().unwrap() == Language::RU { &RU_TRANS } else { &EN_TRANS };
-            let dialog = MessageDialog::builder().transient_for(&window_p).heading(t.confirm_title).body(t.confirm_body).build();
-            dialog.add_response("cancel", t.confirm_no); dialog.add_response("proceed", t.confirm_yes);
-            dialog.set_response_appearance("proceed", ResponseAppearance::Destructive);
-            let proceed_t = proceed;
-            dialog.connect_response(None, move |d, res| { if res == "proceed" { proceed_t(); } d.close(); });
-            dialog.present();
-        } else { proceed(); }
-    });
-
-    let injector_r = injector.clone(); let game_r = game.clone(); let overlay_r = toast_overlay.clone();
-    let apply_btn_r = apply_btn.clone(); let restore_btn_r = restore_btn.clone(); let copy_btn_r = copy_btn.clone();
-    let lang_r = current_lang.clone();
-    restore_btn.connect_clicked(move |_| {
-        let injector_i = injector_r.clone(); let game_i = game_r.clone(); let overlay_i = overlay_r.clone();
-        let apply_btn_i = apply_btn_r.clone(); let restore_btn_i = restore_btn_r.clone(); let copy_btn_i = copy_btn_r.clone();
-        let lang_i = lang_r.clone();
-        glib::spawn_future_local(async move {
-            let res = tokio::task::spawn_blocking(move || injector_i.restore_original(&game_i)).await.unwrap();
-            if res.is_ok() { 
-                let t = if *lang_i.lock().unwrap() == Language::RU { &RU_TRANS } else { &EN_TRANS };
-                apply_btn_i.set_label(t.apply_patch); apply_btn_i.set_sensitive(true);
-                restore_btn_i.set_sensitive(false); copy_btn_i.set_visible(false);
-                overlay_i.add_toast(Toast::new(if *lang_i.lock().unwrap() == Language::RU { "Восстановлено!" } else { "Restored!" })); 
             }
         });
-    });
+    }
+
+    {
+        let state = state.clone();
+        let game = game.clone();
+        let update_row_state = update_row_state.clone();
+        apply_btn.connect_clicked(move |btn| {
+            let proceed: Rc<dyn Fn()> = {
+                let state = state.clone();
+                let game = game.clone();
+                let update_row_state = update_row_state.clone();
+                let btn = btn.clone();
+                Rc::new(move || {
+                    let state = state.clone();
+                    let game = game.clone();
+                    let update_row_state = update_row_state.clone();
+                    let btn = btn.clone();
+                    btn.set_sensitive(false);
+                    glib::spawn_future_local(async move {
+                        let injector = state.injector.clone();
+                        let game_t = game.clone();
+                        let res = tokio::task::spawn_blocking(move || injector.backup_and_deploy(&game_t)).await;
+                        let trans = state.trans();
+                        if state.report_outcome(res, trans.success) {
+                            update_row_state(true);
+                        } else {
+                            update_row_state(false);
+                        }
+                    });
+                })
+            };
+
+            if game.is_online_multiplayer || game.has_anticheat {
+                let trans = state.trans();
+                let dialog = MessageDialog::builder().transient_for(&state.window).heading(trans.confirm_title).body(trans.confirm_body).build();
+                dialog.add_response("cancel", trans.confirm_no);
+                dialog.add_response("proceed", trans.confirm_yes);
+                dialog.set_response_appearance("proceed", ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+                dialog.connect_response(None, move |d, res| { d.close(); if res == "proceed" { proceed(); } });
+                dialog.present();
+            } else {
+                proceed();
+            }
+        });
+    }
+
+    {
+        let state = state.clone();
+        let game = game.clone();
+        let update_row_state = update_row_state.clone();
+        restore_btn.connect_clicked(move |btn| {
+            let state = state.clone();
+            let game = game.clone();
+            let update_row_state = update_row_state.clone();
+            let btn = btn.clone();
+            btn.set_sensitive(false);
+            glib::spawn_future_local(async move {
+                let injector = state.injector.clone();
+                let game_t = game.clone();
+                let res = tokio::task::spawn_blocking(move || injector.restore_original(&game_t)).await;
+                let trans = state.trans();
+                if state.report_outcome(res, trans.restored) {
+                    update_row_state(false);
+                } else {
+                    update_row_state(true);
+                }
+            });
+        });
+    }
+
     row
 }

@@ -42,7 +42,7 @@ pub fn apply_launch_options(appid: &str, override_str: &str) -> Result<bool> {
         return Ok(false);
     }
 
-    let mut updated_any = false;
+    let mut handled_any = false;
     for file_path in files {
         if let Ok(content) = fs::read_to_string(&file_path) {
             let new_content = inject_launch_option_into_vdf(&content, appid, override_str);
@@ -53,11 +53,26 @@ pub fn apply_launch_options(appid: &str, override_str: &str) -> Result<bool> {
                 }
                 fs::write(&file_path, new_content)
                     .with_context(|| format!("Failed to update localconfig.vdf at {:?}", file_path))?;
-                updated_any = true;
+            }
+            handled_any = true;
+        }
+    }
+    Ok(handled_any)
+}
+
+/// Steam rewrites `localconfig.vdf` from memory when it exits, so edits made while
+/// it is running are silently lost. Callers should warn the user in that case.
+pub fn is_steam_running() -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else { return false };
+    for entry in entries.flatten() {
+        if let Ok(comm) = fs::read_to_string(entry.path().join("comm")) {
+            let comm = comm.trim();
+            if comm == "steam" || comm == "steamwebhelper" {
+                return true;
             }
         }
     }
-    Ok(updated_any)
+    false
 }
 
 pub fn apply_proton_launch_options(appid: &str) -> Result<bool> {
@@ -83,10 +98,6 @@ pub fn remove_launch_options(appid: &str) -> Result<bool> {
         }
     }
     Ok(updated_any)
-}
-
-pub fn remove_proton_launch_options(appid: &str) -> Result<bool> {
-    remove_launch_options(appid)
 }
 
 /// Finds the inner block range `(open_brace_pos + 1, close_brace_pos)` of an app block `"<appid>"\n{ ... }`

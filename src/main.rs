@@ -3,10 +3,10 @@ mod steam_cache;
 mod steam_api;
 mod injector;
 mod ui_main;
-mod updater;
 mod utils;
 mod steam_vdf;
 mod smokeapi_manager;
+mod config;
 
 
 use libadwaita::prelude::*;
@@ -21,7 +21,7 @@ fn main() -> gtk4::glib::ExitCode {
     let _guard = _rt.enter();
 
     let app = libadwaita::Application::builder()
-        .application_id("com.github.cream-api-auto")
+        .application_id("io.github.vlapochkin.vapordose")
         .build();
 
     app.connect_activate(ui_main::build_ui);

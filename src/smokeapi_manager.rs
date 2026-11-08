@@ -34,13 +34,23 @@ pub fn get_installed_version() -> String {
             }
         }
     }
-    "v2.0.0 (Bundled)".to_string()
+    // Fall back to the version shipped next to the binary (written by build_appimage.sh)
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("resources").join("version.txt")))
+        .and_then(|p| fs::read_to_string(p).ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    match bundled {
+        Some(v) => format!("{} (Bundled)", v),
+        None => "unknown (Bundled)".to_string(),
+    }
 }
 
 pub async fn check_for_updates() -> Result<SmokeApiStatus> {
     let current_version = get_installed_version();
     let client = Client::builder()
-        .user_agent("VaporDose-SmokeAPI-Manager/0.5.0")
+        .user_agent(concat!("VaporDose-SmokeAPI-Manager/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(8))
         .build()?;
 
@@ -70,7 +80,7 @@ pub async fn download_and_install_latest() -> Result<String> {
     fs::create_dir_all(&user_res_dir).context("Failed to create resources directory")?;
 
     let client = Client::builder()
-        .user_agent("VaporDose-SmokeAPI-Manager/0.5.0")
+        .user_agent(concat!("VaporDose-SmokeAPI-Manager/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 

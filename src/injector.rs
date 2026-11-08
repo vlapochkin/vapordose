@@ -8,12 +8,26 @@ fn get_user_config_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config"))
 }
 
+/// Non-fatal conditions the UI should tell the user about after a deploy/restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployWarning {
+    /// Steam is running: it rewrites localconfig.vdf on exit, so launch options may be lost.
+    SteamRunning,
+    /// No localconfig.vdf was found or it could not be written; launch options must be set by hand.
+    LaunchOptionsNotApplied,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DeployOutcome {
+    pub warnings: Vec<DeployWarning>,
+}
+
 pub struct Injector {}
 
 impl Injector {
     pub fn new() -> Self { Self {} }
 
-    pub fn backup_and_deploy(&self, game: &SteamGame) -> Result<()> {
+    pub fn backup_and_deploy(&self, game: &SteamGame) -> Result<DeployOutcome> {
         if game.targets.is_empty() {
             anyhow::bail!("No targets found for this game.");
         }
@@ -24,8 +38,7 @@ impl Injector {
             }
 
             let filename = target.path.file_name().unwrap_or_default().to_string_lossy();
-            
-            // Determine names
+
             let (backup_name, resource_name) = match filename.as_ref() {
                 "steam_api64.dll" => ("steam_api64_o.dll", "smoke_api64.dll"),
                 "steam_api.dll" => ("steam_api_o.dll", "smoke_api32.dll"),
@@ -39,13 +52,13 @@ impl Injector {
             let backup_path = target.path.with_file_name(backup_name);
             let root_backup_path = game.install_dir.join("libsteam_api_o.so");
 
-            // Step 1: Backup (Rename original to .orig / root _o.so)
+            // Step 1: Backup (rename original to *_o)
             if !backup_path.exists() {
                 if target.path.exists() {
-                    if let Err(_) = fs::rename(&target.path, &backup_path) {
+                    if fs::rename(&target.path, &backup_path).is_err() {
                         if let Err(e) = fs::copy(&target.path, &backup_path).and_then(|_| fs::remove_file(&target.path)) {
                             if e.kind() == io::ErrorKind::PermissionDenied {
-                                anyhow::bail!("Permission Denied: Cannot backup file. The filesystem might be read-only.");
+                                anyhow::bail!("Permission denied: cannot back up {:?}. The filesystem might be read-only.", target.path);
                             }
                             return Err(e).with_context(|| format!("Failed to backup {:?}", target.path));
                         }
@@ -60,22 +73,22 @@ impl Injector {
                 fs::remove_file(&target.path).ok();
             }
 
-            // Step 2 & 3: Copy proxy binary to target path
+            // Step 2: Copy proxy binary to target path
             let source_file = crate::utils::get_resources_path().join(resource_name);
             if !source_file.exists() {
                 fs::rename(&backup_path, &target.path).ok(); // Restore on fail
-                anyhow::bail!("Resource file not found: {:?}", source_file);
+                anyhow::bail!("SmokeAPI binary not found: {:?}. Use \"Update SmokeAPI\" from the menu.", source_file);
             }
 
             if let Err(e) = fs::copy(&source_file, &target.path) {
                 fs::rename(&backup_path, &target.path).ok(); // Restore on fail
                 if e.kind() == io::ErrorKind::PermissionDenied {
-                    anyhow::bail!("Permission Denied: Cannot write proxy file.");
+                    anyhow::bail!("Permission denied: cannot write {:?}.", target.path);
                 }
                 return Err(e).with_context(|| format!("Failed to deploy proxy to {:?}", target.path));
             }
 
-            // Step 4: Deploy SmokeAPI v4 config into target dir
+            // Step 3: Deploy SmokeAPI v4 config into target dir
             if let Some(parent_dir) = target.path.parent() {
                 self.generate_configs(parent_dir, &game.appid)?;
             }
@@ -93,15 +106,24 @@ impl Injector {
             self.write_smoke_config(&app_specific, &game.appid, &[])?;
         }
 
+        let mut outcome = DeployOutcome::default();
+
         // Auto-inject Proton WINEDLLOVERRIDES into Steam localconfig.vdf if game has Windows targets
         if game.targets.iter().any(|t| !t.is_linux) {
-            crate::steam_vdf::apply_proton_launch_options(&game.appid).ok();
+            match crate::steam_vdf::apply_proton_launch_options(&game.appid) {
+                Ok(true) => {
+                    if crate::steam_vdf::is_steam_running() {
+                        outcome.warnings.push(DeployWarning::SteamRunning);
+                    }
+                }
+                Ok(false) | Err(_) => outcome.warnings.push(DeployWarning::LaunchOptionsNotApplied),
+            }
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
-    pub fn restore_original(&self, game: &SteamGame) -> Result<()> {
+    pub fn restore_original(&self, game: &SteamGame) -> Result<DeployOutcome> {
         for target in &game.targets {
             if !target.path.starts_with(&game.install_dir) {
                 continue;
@@ -125,20 +147,15 @@ impl Injector {
             }
 
             if let Some(parent_dir) = target.path.parent() {
-                let config_path = parent_dir.join("SmokeAPI.config.json");
-                let ini_path = parent_dir.join("cream_api.ini");
-                fs::remove_file(&config_path).ok();
-                fs::remove_file(&ini_path).ok();
+                fs::remove_file(parent_dir.join("SmokeAPI.config.json")).ok();
+                fs::remove_file(parent_dir.join("cream_api.ini")).ok();
             }
         }
 
         // Clean root config & backups
-        let root_config = game.install_dir.join("SmokeAPI.config.json");
-        let root_ini = game.install_dir.join("cream_api.ini");
-        let root_backup = game.install_dir.join("libsteam_api_o.so");
-        fs::remove_file(&root_config).ok();
-        fs::remove_file(&root_ini).ok();
-        fs::remove_file(&root_backup).ok();
+        fs::remove_file(game.install_dir.join("SmokeAPI.config.json")).ok();
+        fs::remove_file(game.install_dir.join("cream_api.ini")).ok();
+        fs::remove_file(game.install_dir.join("libsteam_api_o.so")).ok();
 
         // Clean user config dir
         if let Some(user_config_dir) = get_user_config_dir() {
@@ -146,10 +163,15 @@ impl Injector {
             fs::remove_file(&app_specific).ok();
         }
 
-        // Auto-remove launch options from Steam localconfig.vdf
-        crate::steam_vdf::remove_launch_options(&game.appid).ok();
+        let mut outcome = DeployOutcome::default();
+        if game.targets.iter().any(|t| !t.is_linux) {
+            crate::steam_vdf::remove_launch_options(&game.appid).ok();
+            if crate::steam_vdf::is_steam_running() {
+                outcome.warnings.push(DeployWarning::SteamRunning);
+            }
+        }
 
-        Ok(())
+        Ok(outcome)
     }
 
     /// Generates standard SmokeAPI v4 config JSON and cream_api.ini fallback
@@ -215,7 +237,7 @@ impl Injector {
 
     pub fn get_proton_instructions(&self, game: &SteamGame) -> Option<String> {
         if game.targets.iter().any(|t| !t.is_linux) {
-            Some(format!("WINEDLLOVERRIDES=\"steam_api64=n,b;steam_api=n,b\" %command%"))
+            Some("WINEDLLOVERRIDES=\"steam_api64=n,b;steam_api=n,b\" %command%".to_string())
         } else {
             None
         }
